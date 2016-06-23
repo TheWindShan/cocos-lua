@@ -1,0 +1,97 @@
+function class(classname, ...)
+    local cls = {__cname = classname}
+
+    local supers = {...}            --多继承
+    for _, super in ipairs(supers) do
+        local superType = type(super)
+        assert(superType == "nil" or superType == "table" or superType == "function",  --只接受三种类型的父类
+            string.format("class() - create class \"%s\" with invalid super class type \"%s\"",
+                classname, superType))
+
+        if superType == "function" then
+            assert(cls.__create == nil,
+                string.format("class() - create class \"%s\" with more than one creating function",
+                    classname));
+            -- if super is function, set it to __create
+            cls.__create = super                         --_create方法在实例化对象的时候调用
+        elseif superType == "table" then
+            if super[".isclass"] then
+                -- super is native class
+                assert(cls.__create == nil,
+                    string.format("class() - create class \"%s\" with more than one creating function or native class",
+                        classname));
+                cls.__create = function() return super:create() end   --_create方法在实例化对象的时候调用
+            else 
+                -- super is pure lua class
+                cls.__supers = cls.__supers or {}             
+                cls.__supers[#cls.__supers + 1] = super 
+                if not cls.super then
+                    -- set first super pure lua class as class.super
+                    cls.super = super
+                end
+            end
+        else
+            error(string.format("class() - create class \"%s\" with invalid super type",
+                        classname), 0)
+        end
+    end
+
+    cls.__index = cls
+    if not cls.__supers or #cls.__supers == 1 then
+        setmetatable(cls, {__index = cls.super})
+    else
+        setmetatable(cls, {__index = function(_, key)          --设置cls的metatable的_index元方法，到父类中去找
+            local supers = cls.__supers
+            for i = 1, #supers do
+                local super = supers[i]
+                if super[key] then return super[key] end
+            end
+        end})
+    end
+
+    if not cls.ctor then
+        -- add default constructor
+        cls.ctor = function() end         --创建类的ctor()方法
+    end
+    cls.new = function(...)  --创建new方法
+        local instance
+        if cls.__create then
+            instance = cls.__create(...)   --  继承function 或者native class
+        else
+            instance = {}
+        end
+        setmetatableindex(instance, cls)  
+        instance.class = cls              --instance通过class找到类
+        instance:ctor(...)				 --开始构造					
+        return instance
+    end
+    cls.create = function(_, ...)
+        return cls.new(...)
+    end
+
+    return cls
+end
+
+
+
+local setmetatableindex_
+setmetatableindex_ = function(t, index)
+    if type(t) == "userdata" then         --对于userdata设置它的环境，并将index设置为peer环境的元表，这样userdata不仅仅可以用到它的C++的方法，也可以用到lua类的方法
+        local peer = tolua.getpeer(t)
+        if not peer then
+            peer = {}
+            tolua.setpeer(t, peer)
+        end
+        setmetatableindex_(peer, index)
+    else 
+        local mt = getmetatable(t)         --对于lua table对象，直接设置index为它的元表
+        if not mt then mt = {} end
+        if not mt.__index then
+            mt.__index = index
+            setmetatable(t, mt)
+        elseif mt.__index ~= index then
+            setmetatableindex_(mt, index)
+        end
+    end
+end
+setmetatableindex = setmetatableindex_
